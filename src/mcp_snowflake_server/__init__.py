@@ -83,10 +83,10 @@ def main():
     }
 
     # Handle token authentication separately
+    # Snowflake Programmatic Access Token should be passed as password parameter
     snowflake_token = os.getenv("SNOWFLAKE_TOKEN")
     if snowflake_token:
-        connection_args_from_env["token"] = snowflake_token
-        connection_args_from_env["authenticator"] = "oauth"
+        connection_args_from_env["password"] = snowflake_token
 
     server_args, connection_args = parse_args()
 
