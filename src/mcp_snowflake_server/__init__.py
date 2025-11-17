@@ -82,6 +82,12 @@ def main():
         if os.getenv("SNOWFLAKE_" + k.upper()) is not None
     }
 
+    # Handle token authentication separately
+    snowflake_token = os.getenv("SNOWFLAKE_TOKEN")
+    if snowflake_token:
+        connection_args_from_env["token"] = snowflake_token
+        connection_args_from_env["authenticator"] = "oauth"
+
     server_args, connection_args = parse_args()
 
     connection_args = {**connection_args_from_env, **connection_args}
