@@ -1,0 +1,33 @@
+name: Snowflake MCP Server
+version: 0.4.0
+description: Model Context Protocol server for Snowflake database interactions
+
+# Runtime configuration
+runtimeEnvironment:
+  pythonVersion: "3.11"
+
+# Application entrypoint
+entrypoint: start-app.sh
+
+# Environment variables (will be set in DataRobot UI)
+environmentVariables:
+  - name: SNOWFLAKE_USER
+    description: "Snowflake username"
+  - name: SNOWFLAKE_ACCOUNT
+    description: "Snowflake account identifier"
+  - name: SNOWFLAKE_ROLE
+    description: "Snowflake role"
+  - name: SNOWFLAKE_DATABASE
+    description: "Default database"
+  - name: SNOWFLAKE_SCHEMA
+    description: "Default schema"
+  - name: SNOWFLAKE_WAREHOUSE
+    description: "Snowflake warehouse"
+  - name: SNOWFLAKE_TOKEN
+    description: "Programmatic access token"
+    secret: true
+
+# Resource requirements
+resources:
+  memory: 512Mi
+  cpu: 0.5
