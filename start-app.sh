@@ -3,21 +3,14 @@ set -e
 
 echo "Starting Snowflake MCP Server deployment..."
 
-# Install uv if not available
-if ! command -v uv &> /dev/null; then
-    echo "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
-fi
-
-# Install dependencies with compatible versions
+# Install dependencies from requirements.txt
 echo "Installing dependencies..."
-pip install --upgrade pyOpenSSL>=24.0.0 cryptography>=41.0.0
+pip install --no-cache-dir -r requirements.txt
 
-# Sync uv dependencies
-echo "Syncing uv dependencies..."
-uv sync
+# Install the package in editable mode
+echo "Installing MCP Snowflake Server package..."
+pip install --no-cache-dir -e .
 
 # Start the MCP server
 echo "Starting MCP Snowflake Server..."
-exec uv run mcp_snowflake_server
+exec mcp_snowflake_server
