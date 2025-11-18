@@ -1,19 +1,22 @@
 """HTTP wrapper for MCP Snowflake Server for DataRobot deployment."""
 import argparse
 import asyncio
+import json
 import logging
 import os
 from typing import Any
 
 import dotenv
 import snowflake.connector
+from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 import uvicorn
 
 from .db_client import SnowflakeDB
+from .write_detector import SQLWriteDetector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +26,97 @@ logger = logging.getLogger("mcp_snowflake_http_server")
 
 # Global database client
 db_client: SnowflakeDB = None
+write_detector: SQLWriteDetector = None
+
+# Create FastMCP server for MCP protocol
+mcp = FastMCP("snowflake-mcp-server")
+
+
+# MCP Tools
+@mcp.tool()
+async def list_databases() -> str:
+    """List all available databases in Snowflake"""
+    query = "SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES"
+    data, data_id = await db_client.execute_query(query)
+    return json.dumps({"databases": data, "data_id": data_id})
+
+
+@mcp.tool()
+async def list_schemas(database: str) -> str:
+    """List all schemas in a database
+
+    Args:
+        database: Database name to list schemas from
+    """
+    query = f"SELECT SCHEMA_NAME FROM {database.upper()}.INFORMATION_SCHEMA.SCHEMATA"
+    data, data_id = await db_client.execute_query(query)
+    return json.dumps({"database": database, "schemas": data, "data_id": data_id})
+
+
+@mcp.tool()
+async def list_tables(database: str, schema: str) -> str:
+    """List all tables in a specific database and schema
+
+    Args:
+        database: Database name
+        schema: Schema name
+    """
+    query = f"""
+        SELECT table_catalog, table_schema, table_name, comment
+        FROM {database}.information_schema.tables
+        WHERE table_schema = '{schema.upper()}'
+    """
+    data, data_id = await db_client.execute_query(query)
+    return json.dumps({
+        "database": database,
+        "schema": schema,
+        "tables": data,
+        "data_id": data_id
+    })
+
+
+@mcp.tool()
+async def describe_table(table_name: str) -> str:
+    """Get the schema information for a specific table
+
+    Args:
+        table_name: Fully qualified table name in the format 'database.schema.table'
+    """
+    split_identifier = table_name.split(".")
+    if len(split_identifier) < 3:
+        raise ValueError("Table name must be fully qualified as 'database.schema.table'")
+
+    database_name = split_identifier[0].upper()
+    schema_name = split_identifier[1].upper()
+    tbl_name = split_identifier[2].upper()
+
+    query = f"""
+        SELECT column_name, column_default, is_nullable, data_type, comment
+        FROM {database_name}.information_schema.columns
+        WHERE table_schema = '{schema_name}' AND table_name = '{tbl_name}'
+    """
+    data, data_id = await db_client.execute_query(query)
+    return json.dumps({
+        "database": database_name,
+        "schema": schema_name,
+        "table": tbl_name,
+        "columns": data,
+        "data_id": data_id
+    })
+
+
+@mcp.tool()
+async def read_query(query: str) -> str:
+    """Execute a SELECT query
+
+    Args:
+        query: SELECT SQL query to execute
+    """
+    if write_detector.analyze_query(query)["contains_write"]:
+        raise ValueError("Calls to read_query should not contain write operations")
+
+    data, data_id = await db_client.execute_query(query)
+    return json.dumps({"data": data, "data_id": data_id, "row_count": len(data) if isinstance(data, list) else 0})
 
 
 async def health_check(request: Request) -> Response:
@@ -187,7 +281,7 @@ async def describe_table_endpoint(request: Request) -> Response:
 
 async def startup():
     """Initialize database connection on startup."""
-    global db_client
+    global db_client, write_detector
 
     logger.info("Starting MCP Snowflake HTTP Server")
 
@@ -220,6 +314,9 @@ async def startup():
     db_client = SnowflakeDB(connection_args_from_env)
     db_client.start_init_connection()
 
+    # Initialize write detector
+    write_detector = SQLWriteDetector()
+
     logger.info("Database connection initialized successfully")
 
 
@@ -241,6 +338,8 @@ routes = [
     Route("/api/schemas", list_schemas_endpoint, methods=["GET"]),
     Route("/api/tables", list_tables_endpoint, methods=["GET"]),
     Route("/api/table/describe", describe_table_endpoint, methods=["GET"]),
+    # Mount MCP Streamable HTTP endpoint
+    Mount("/mcp", app=mcp.streamable_http_app()),
 ]
 
 # Create Starlette app
