@@ -75,9 +75,11 @@ def init_db_client():
 
 
 # Create FastMCP server for MCP protocol with stateless HTTP
-mcp = FastMCP("snowflake-mcp-server")
-mcp.settings.stateless_http = True
-mcp.settings.streamable_http_path = "/"  # Set path to / so Mount("/mcp", ...) works correctly
+mcp = FastMCP(
+    "snowflake-mcp-server",
+    stateless_http=True,
+    streamable_http_path="/"  # Set path to / so Mount("/mcp", ...) works correctly
+)
 
 
 # MCP Tools
