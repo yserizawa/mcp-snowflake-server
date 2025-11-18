@@ -29,7 +29,7 @@ db_client: SnowflakeDB = None
 write_detector: SQLWriteDetector = None
 
 # Create FastMCP server for MCP protocol
-mcp = FastMCP("snowflake-mcp-server")
+mcp = FastMCP("snowflake-mcp-server", stateless_http=True)
 
 
 # MCP Tools
