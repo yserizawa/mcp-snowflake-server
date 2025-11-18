@@ -28,8 +28,10 @@ logger = logging.getLogger("mcp_snowflake_http_server")
 db_client: SnowflakeDB = None
 write_detector: SQLWriteDetector = None
 
-# Create FastMCP server for MCP protocol
-mcp = FastMCP("snowflake-mcp-server", stateless_http=True)
+# Create FastMCP server for MCP protocol with stateless HTTP
+mcp = FastMCP("snowflake-mcp-server")
+mcp.settings.stateless_http = True
+mcp.settings.streamable_http_path = "/"  # Set path to / so Mount("/mcp", ...) works correctly
 
 
 # MCP Tools
@@ -338,8 +340,8 @@ routes = [
     Route("/api/schemas", list_schemas_endpoint, methods=["GET"]),
     Route("/api/tables", list_tables_endpoint, methods=["GET"]),
     Route("/api/table/describe", describe_table_endpoint, methods=["GET"]),
-    # Mount MCP Streamable HTTP endpoint at root so /mcp path works correctly
-    Mount("", app=mcp.streamable_http_app()),
+    # Mount MCP Streamable HTTP endpoint
+    Mount("/mcp", app=mcp.streamable_http_app()),
 ]
 
 # Create Starlette app
