@@ -11,6 +11,6 @@ pip install --no-cache-dir -r requirements.txt
 echo "Installing MCP Snowflake Server package..."
 pip install --no-cache-dir -e .
 
-# Start the MCP server
-echo "Starting MCP Snowflake Server..."
-exec mcp_snowflake_server
+# Start the HTTP server for DataRobot
+echo "Starting MCP Snowflake HTTP Server on port 8080..."
+exec python -m mcp_snowflake_server.http_server --host 0.0.0.0 --port 8080
