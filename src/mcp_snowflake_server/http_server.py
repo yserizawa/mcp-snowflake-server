@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 import dotenv
@@ -28,6 +29,51 @@ logger = logging.getLogger("mcp_snowflake_http_server")
 db_client: SnowflakeDB = None
 write_detector: SQLWriteDetector = None
 
+
+def init_db_client():
+    """Initialize database client and write detector."""
+    global db_client, write_detector
+
+    if db_client is not None:
+        return
+
+    logger.info("Initializing database client")
+
+    # Load environment variables
+    dotenv.load_dotenv()
+
+    default_connection_args = snowflake.connector.connection.DEFAULT_CONFIGURATION
+
+    connection_args_from_env = {
+        k: os.getenv("SNOWFLAKE_" + k.upper())
+        for k in default_connection_args
+        if os.getenv("SNOWFLAKE_" + k.upper()) is not None
+    }
+
+    # Handle token authentication
+    snowflake_token = os.getenv("SNOWFLAKE_TOKEN")
+    if snowflake_token:
+        connection_args_from_env["password"] = snowflake_token
+
+    # Validate required parameters
+    if "database" not in connection_args_from_env:
+        raise ValueError("SNOWFLAKE_DATABASE environment variable is required")
+    if "schema" not in connection_args_from_env:
+        raise ValueError("SNOWFLAKE_SCHEMA environment variable is required")
+
+    logger.info(f"Connecting to Snowflake database: {connection_args_from_env.get('database')}")
+    logger.info(f"Using schema: {connection_args_from_env.get('schema')}")
+
+    # Initialize database client
+    db_client = SnowflakeDB(connection_args_from_env)
+    db_client.start_init_connection()
+
+    # Initialize write detector
+    write_detector = SQLWriteDetector()
+
+    logger.info("Database connection initialized successfully")
+
+
 # Create FastMCP server for MCP protocol with stateless HTTP
 mcp = FastMCP("snowflake-mcp-server")
 mcp.settings.stateless_http = True
@@ -38,6 +84,7 @@ mcp.settings.streamable_http_path = "/"  # Set path to / so Mount("/mcp", ...) w
 @mcp.tool()
 async def list_databases() -> str:
     """List all available databases in Snowflake"""
+    init_db_client()
     query = "SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES"
     data, data_id = await db_client.execute_query(query)
     return json.dumps({"databases": data, "data_id": data_id})
@@ -50,6 +97,7 @@ async def list_schemas(database: str) -> str:
     Args:
         database: Database name to list schemas from
     """
+    init_db_client()
     query = f"SELECT SCHEMA_NAME FROM {database.upper()}.INFORMATION_SCHEMA.SCHEMATA"
     data, data_id = await db_client.execute_query(query)
     return json.dumps({"database": database, "schemas": data, "data_id": data_id})
@@ -63,6 +111,7 @@ async def list_tables(database: str, schema: str) -> str:
         database: Database name
         schema: Schema name
     """
+    init_db_client()
     query = f"""
         SELECT table_catalog, table_schema, table_name, comment
         FROM {database}.information_schema.tables
@@ -84,6 +133,7 @@ async def describe_table(table_name: str) -> str:
     Args:
         table_name: Fully qualified table name in the format 'database.schema.table'
     """
+    init_db_client()
     split_identifier = table_name.split(".")
     if len(split_identifier) < 3:
         raise ValueError("Table name must be fully qualified as 'database.schema.table'")
@@ -114,6 +164,7 @@ async def read_query(query: str) -> str:
     Args:
         query: SELECT SQL query to execute
     """
+    init_db_client()
     if write_detector.analyze_query(query)["contains_write"]:
         raise ValueError("Calls to read_query should not contain write operations")
 
@@ -283,43 +334,8 @@ async def describe_table_endpoint(request: Request) -> Response:
 
 async def startup():
     """Initialize database connection on startup."""
-    global db_client, write_detector
-
     logger.info("Starting MCP Snowflake HTTP Server")
-
-    # Load environment variables
-    dotenv.load_dotenv()
-
-    default_connection_args = snowflake.connector.connection.DEFAULT_CONFIGURATION
-
-    connection_args_from_env = {
-        k: os.getenv("SNOWFLAKE_" + k.upper())
-        for k in default_connection_args
-        if os.getenv("SNOWFLAKE_" + k.upper()) is not None
-    }
-
-    # Handle token authentication
-    snowflake_token = os.getenv("SNOWFLAKE_TOKEN")
-    if snowflake_token:
-        connection_args_from_env["password"] = snowflake_token
-
-    # Validate required parameters
-    if "database" not in connection_args_from_env:
-        raise ValueError("SNOWFLAKE_DATABASE environment variable is required")
-    if "schema" not in connection_args_from_env:
-        raise ValueError("SNOWFLAKE_SCHEMA environment variable is required")
-
-    logger.info(f"Connecting to Snowflake database: {connection_args_from_env.get('database')}")
-    logger.info(f"Using schema: {connection_args_from_env.get('schema')}")
-
-    # Initialize database client
-    db_client = SnowflakeDB(connection_args_from_env)
-    db_client.start_init_connection()
-
-    # Initialize write detector
-    write_detector = SQLWriteDetector()
-
-    logger.info("Database connection initialized successfully")
+    init_db_client()
 
 
 async def shutdown():
