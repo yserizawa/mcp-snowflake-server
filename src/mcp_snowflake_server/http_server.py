@@ -77,8 +77,8 @@ def init_db_client():
 # Create FastMCP server for MCP protocol with stateless HTTP
 mcp = FastMCP(
     "snowflake-mcp-server",
-    stateless_http=True,
-    streamable_http_path="/"  # Set path to / so Mount("/mcp", ...) works correctly
+    stateless_http=True
+    # Use default streamable_http_path="/mcp"
 )
 
 
@@ -358,8 +358,8 @@ routes = [
     Route("/api/schemas", list_schemas_endpoint, methods=["GET"]),
     Route("/api/tables", list_tables_endpoint, methods=["GET"]),
     Route("/api/table/describe", describe_table_endpoint, methods=["GET"]),
-    # Mount MCP Streamable HTTP endpoint
-    Mount("/mcp", app=mcp.streamable_http_app()),
+    # Mount MCP Streamable HTTP endpoint (streamable_http_path defaults to /mcp)
+    Mount("", app=mcp.streamable_http_app()),
 ]
 
 # Create Starlette app
