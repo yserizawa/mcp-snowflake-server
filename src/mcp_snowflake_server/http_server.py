@@ -9,11 +9,10 @@ from typing import Any
 
 import dotenv
 import snowflake.connector
-from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 import uvicorn
 
 from .db_client import SnowflakeDB
@@ -74,104 +73,225 @@ def init_db_client():
     logger.info("Database connection initialized successfully")
 
 
-# Create FastMCP server for MCP protocol with stateless HTTP
-mcp = FastMCP(
-    "snowflake-mcp-server",
-    stateless_http=True
-    # Use default streamable_http_path="/mcp"
-)
+# MCP Tools definition for JSON-RPC endpoint
+MCP_TOOLS = [
+    {
+        "name": "list_databases",
+        "description": "List all available databases in Snowflake",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "list_schemas",
+        "description": "List all schemas in a database",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "database": {
+                    "type": "string",
+                    "description": "Database name to list schemas from",
+                },
+            },
+            "required": ["database"],
+        },
+    },
+    {
+        "name": "list_tables",
+        "description": "List all tables in a specific database and schema",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "database": {"type": "string", "description": "Database name"},
+                "schema": {"type": "string", "description": "Schema name"},
+            },
+            "required": ["database", "schema"],
+        },
+    },
+    {
+        "name": "describe_table",
+        "description": "Get the schema information for a specific table",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "table_name": {
+                    "type": "string",
+                    "description": "Fully qualified table name in the format 'database.schema.table'",
+                },
+            },
+            "required": ["table_name"],
+        },
+    },
+    {
+        "name": "read_query",
+        "description": "Execute a SELECT query",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "SELECT SQL query to execute"},
+            },
+            "required": ["query"],
+        },
+    },
+]
 
 
-# MCP Tools
-@mcp.tool()
-async def list_databases() -> str:
-    """List all available databases in Snowflake"""
-    init_db_client()
-    query = "SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES"
-    data, data_id = await db_client.execute_query(query)
-    return json.dumps({"databases": data, "data_id": data_id})
+async def mcp_endpoint(request: Request) -> Response:
+    """MCP JSON-RPC endpoint for Streamable HTTP transport."""
+    try:
+        init_db_client()
+        data = await request.json()
+
+        jsonrpc = data.get("jsonrpc", "2.0")
+        method = data.get("method")
+        params = data.get("params", {})
+        request_id = data.get("id")
+
+        result = None
+        error = None
+
+        if method == "initialize":
+            result = {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                },
+                "serverInfo": {
+                    "name": "snowflake-mcp-server",
+                    "version": "0.4.0",
+                },
+            }
+
+        elif method == "tools/list":
+            result = {"tools": MCP_TOOLS}
+
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            arguments = params.get("arguments", {})
+
+            try:
+                tool_result = await execute_mcp_tool(tool_name, arguments)
+                result = {
+                    "content": [
+                        {"type": "text", "text": tool_result}
+                    ]
+                }
+            except Exception as e:
+                result = {
+                    "content": [
+                        {"type": "text", "text": f"Error: {str(e)}"}
+                    ],
+                    "isError": True
+                }
+
+        elif method == "notifications/initialized":
+            # This is a notification, no response needed
+            return Response(status_code=204)
+
+        else:
+            error = {
+                "code": -32601,
+                "message": f"Method not found: {method}"
+            }
+
+        response_data = {"jsonrpc": jsonrpc, "id": request_id}
+        if error:
+            response_data["error"] = error
+        else:
+            response_data["result"] = result
+
+        return JSONResponse(response_data)
+
+    except Exception as e:
+        logger.error(f"Error in MCP endpoint: {e}")
+        return JSONResponse({
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {
+                "code": -32603,
+                "message": str(e)
+            }
+        }, status_code=500)
 
 
-@mcp.tool()
-async def list_schemas(database: str) -> str:
-    """List all schemas in a database
+async def execute_mcp_tool(tool_name: str, arguments: dict) -> str:
+    """Execute an MCP tool and return the result as JSON string."""
+    if tool_name == "list_databases":
+        query = "SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES"
+        data, data_id = await db_client.execute_query(query)
+        return json.dumps({"databases": data, "data_id": data_id})
 
-    Args:
-        database: Database name to list schemas from
-    """
-    init_db_client()
-    query = f"SELECT SCHEMA_NAME FROM {database.upper()}.INFORMATION_SCHEMA.SCHEMATA"
-    data, data_id = await db_client.execute_query(query)
-    return json.dumps({"database": database, "schemas": data, "data_id": data_id})
+    elif tool_name == "list_schemas":
+        database = arguments.get("database")
+        if not database:
+            raise ValueError("Missing required 'database' parameter")
+        query = f"SELECT SCHEMA_NAME FROM {database.upper()}.INFORMATION_SCHEMA.SCHEMATA"
+        data, data_id = await db_client.execute_query(query)
+        return json.dumps({"database": database, "schemas": data, "data_id": data_id})
 
+    elif tool_name == "list_tables":
+        database = arguments.get("database")
+        schema = arguments.get("schema")
+        if not database or not schema:
+            raise ValueError("Missing required 'database' and 'schema' parameters")
+        query = f"""
+            SELECT table_catalog, table_schema, table_name, comment
+            FROM {database}.information_schema.tables
+            WHERE table_schema = '{schema.upper()}'
+        """
+        data, data_id = await db_client.execute_query(query)
+        return json.dumps({
+            "database": database,
+            "schema": schema,
+            "tables": data,
+            "data_id": data_id
+        })
 
-@mcp.tool()
-async def list_tables(database: str, schema: str) -> str:
-    """List all tables in a specific database and schema
+    elif tool_name == "describe_table":
+        table_name = arguments.get("table_name")
+        if not table_name:
+            raise ValueError("Missing required 'table_name' parameter")
 
-    Args:
-        database: Database name
-        schema: Schema name
-    """
-    init_db_client()
-    query = f"""
-        SELECT table_catalog, table_schema, table_name, comment
-        FROM {database}.information_schema.tables
-        WHERE table_schema = '{schema.upper()}'
-    """
-    data, data_id = await db_client.execute_query(query)
-    return json.dumps({
-        "database": database,
-        "schema": schema,
-        "tables": data,
-        "data_id": data_id
-    })
+        split_identifier = table_name.split(".")
+        if len(split_identifier) < 3:
+            raise ValueError("Table name must be fully qualified as 'database.schema.table'")
 
+        database_name = split_identifier[0].upper()
+        schema_name = split_identifier[1].upper()
+        tbl_name = split_identifier[2].upper()
 
-@mcp.tool()
-async def describe_table(table_name: str) -> str:
-    """Get the schema information for a specific table
+        query = f"""
+            SELECT column_name, column_default, is_nullable, data_type, comment
+            FROM {database_name}.information_schema.columns
+            WHERE table_schema = '{schema_name}' AND table_name = '{tbl_name}'
+        """
+        data, data_id = await db_client.execute_query(query)
+        return json.dumps({
+            "database": database_name,
+            "schema": schema_name,
+            "table": tbl_name,
+            "columns": data,
+            "data_id": data_id
+        })
 
-    Args:
-        table_name: Fully qualified table name in the format 'database.schema.table'
-    """
-    init_db_client()
-    split_identifier = table_name.split(".")
-    if len(split_identifier) < 3:
-        raise ValueError("Table name must be fully qualified as 'database.schema.table'")
+    elif tool_name == "read_query":
+        query = arguments.get("query")
+        if not query:
+            raise ValueError("Missing required 'query' parameter")
 
-    database_name = split_identifier[0].upper()
-    schema_name = split_identifier[1].upper()
-    tbl_name = split_identifier[2].upper()
+        if write_detector.analyze_query(query)["contains_write"]:
+            raise ValueError("Calls to read_query should not contain write operations")
 
-    query = f"""
-        SELECT column_name, column_default, is_nullable, data_type, comment
-        FROM {database_name}.information_schema.columns
-        WHERE table_schema = '{schema_name}' AND table_name = '{tbl_name}'
-    """
-    data, data_id = await db_client.execute_query(query)
-    return json.dumps({
-        "database": database_name,
-        "schema": schema_name,
-        "table": tbl_name,
-        "columns": data,
-        "data_id": data_id
-    })
+        data, data_id = await db_client.execute_query(query)
+        return json.dumps({
+            "data": data,
+            "data_id": data_id,
+            "row_count": len(data) if isinstance(data, list) else 0
+        })
 
-
-@mcp.tool()
-async def read_query(query: str) -> str:
-    """Execute a SELECT query
-
-    Args:
-        query: SELECT SQL query to execute
-    """
-    init_db_client()
-    if write_detector.analyze_query(query)["contains_write"]:
-        raise ValueError("Calls to read_query should not contain write operations")
-
-    data, data_id = await db_client.execute_query(query)
-    return json.dumps({"data": data, "data_id": data_id, "row_count": len(data) if isinstance(data, list) else 0})
+    else:
+        raise ValueError(f"Unknown tool: {tool_name}")
 
 
 async def health_check(request: Request) -> Response:
@@ -358,8 +478,8 @@ routes = [
     Route("/api/schemas", list_schemas_endpoint, methods=["GET"]),
     Route("/api/tables", list_tables_endpoint, methods=["GET"]),
     Route("/api/table/describe", describe_table_endpoint, methods=["GET"]),
-    # Mount MCP Streamable HTTP endpoint (streamable_http_path defaults to /mcp)
-    Mount("", app=mcp.streamable_http_app()),
+    # MCP JSON-RPC endpoint for Streamable HTTP transport
+    Route("/mcp", mcp_endpoint, methods=["POST"]),
 ]
 
 # Create Starlette app
