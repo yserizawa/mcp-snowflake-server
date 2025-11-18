@@ -338,8 +338,8 @@ routes = [
     Route("/api/schemas", list_schemas_endpoint, methods=["GET"]),
     Route("/api/tables", list_tables_endpoint, methods=["GET"]),
     Route("/api/table/describe", describe_table_endpoint, methods=["GET"]),
-    # Mount MCP Streamable HTTP endpoint
-    Mount("/mcp", app=mcp.streamable_http_app()),
+    # Mount MCP Streamable HTTP endpoint at root so /mcp path works correctly
+    Mount("", app=mcp.streamable_http_app()),
 ]
 
 # Create Starlette app
