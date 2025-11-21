@@ -1,11 +1,8 @@
 """HTTP wrapper for MCP Snowflake Server for DataRobot deployment."""
 import argparse
-import asyncio
 import json
 import logging
 import os
-from contextlib import asynccontextmanager
-from typing import Any
 
 import dotenv
 import snowflake.connector

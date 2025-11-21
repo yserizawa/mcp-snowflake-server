@@ -1,0 +1,88 @@
+apiVersion: '2021-09-01'
+location: japaneast
+name: mcp-proxy
+properties:
+  containers:
+  - name: mcp-proxy
+    properties:
+      image: python:3.11-slim
+      resources:
+        requests:
+          cpu: 0.5
+          memoryInGb: 0.5
+      ports:
+      - port: 8000
+        protocol: TCP
+      environmentVariables:
+      - name: 'MCP_SERVER_URL'
+        value: 'https://app.jp.datarobot.com/custom_applications/691bebade2d490a63e68cba4/'
+      - name: 'BEARER_TOKEN'
+        secureValue: 'NjhmMGM0YTFhMTQ0YTlkNmZmZjVkYWI1OnJIWVlOby9ySjlWWFFTY2ZJUXJtZ0tIQjVTYjhLTnNoeGxZdFlTWjFhSmc9'
+      command:
+      - /bin/sh
+      - -c
+      - |
+        pip install --no-cache-dir starlette uvicorn httpx python-dotenv && \
+        cat > /app/proxy_server.py << 'PROXY_EOF'
+        """Simple proxy server for MCP that adds Bearer token authentication."""
+        import argparse
+        import logging
+        import os
+        import dotenv
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import Response
+        import uvicorn
+        import httpx
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        logger = logging.getLogger("mcp_proxy_server")
+        dotenv.load_dotenv()
+
+        MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8080")
+        BEARER_TOKEN = os.getenv("BEARER_TOKEN", "")
+
+        async def proxy_handler(request: Request) -> Response:
+            try:
+                body = await request.body()
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {BEARER_TOKEN}"}
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    target_url = f"{MCP_SERVER_URL}{request.url.path}"
+                    logger.info(f"Forwarding request to: {target_url}")
+                    response = await client.request(method=request.method, url=target_url, headers=headers, content=body, params=request.query_params)
+                    return Response(content=response.content, status_code=response.status_code, headers=dict(response.headers))
+            except Exception as e:
+                logger.error(f"Error proxying request: {e}")
+                return Response(content=f'{{"error": "Proxy error: {str(e)}"}}', status_code=500, media_type="application/json")
+
+        async def health_check(request: Request) -> Response:
+            return Response(content='{"status": "healthy", "service": "mcp-proxy-server"}', media_type="application/json")
+
+        from starlette.routing import Route
+        app = Starlette(debug=True, routes=[Route("/health", health_check, methods=["GET"]), Route("/{path:path}", proxy_handler, methods=["GET", "POST", "PUT", "DELETE", "PATCH"])])
+
+        def main():
+            parser = argparse.ArgumentParser(description="MCP Proxy Server with Bearer Token Authentication")
+            parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+            parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+            args = parser.parse_args()
+            if not BEARER_TOKEN:
+                logger.warning("BEARER_TOKEN environment variable is not set!")
+            logger.info(f"Starting proxy server on {args.host}:{args.port}")
+            logger.info(f"Forwarding to MCP server: {MCP_SERVER_URL}")
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+        if __name__ == "__main__":
+            main()
+        PROXY_EOF
+        python /app/proxy_server.py --host 0.0.0.0 --port 8000
+  osType: Linux
+  restartPolicy: Always
+  ipAddress:
+    type: Public
+    dnsNameLabel: mcp-proxy-yuma
+    ports:
+    - protocol: TCP
+      port: 8000
+tags: null
+type: Microsoft.ContainerInstance/containerGroups
